@@ -8,8 +8,10 @@ version = "0.1.0"
 description = "个人条件选股、回测与模拟盘实验平台"
 requires-python = ">=3.11"
 dependencies = [
+  "duckdb>=1.4,<2",
   "fastapi>=0.115,<1",
   "pydantic>=2.10,<3",
+  "requests>=2.32,<3",
   "uvicorn>=0.34,<1",
 ]
 
@@ -18,7 +20,7 @@ dev = ["httpx>=0.28,<1"]
 
 [project.scripts]
 stock-lab-api = "stock_lab.api:run"
+stock-lab-data = "stock_lab.data_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-

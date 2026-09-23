@@ -45,3 +45,25 @@ python -m unittest discover -s backend/tests -v
 cd frontend && npm run build
 ```
 
+## 本地历史数据仓库
+
+长期执行计划与字段范围见 `docs/DATA_PIPELINE_PLAN.md`。数据仓库使用 DuckDB，运行时文件位于 `data/market/`，不会提交 Git。
+
+```bash
+# 同步股票目录
+stock-lab-data catalog
+
+# 从2018年开始断点同步日线（默认低并发）
+stock-lab-data daily --start 20180101 --workers 2
+
+# 查看进度与数据覆盖
+stock-lab-data status
+
+# 校验重复、价格结构和覆盖范围
+stock-lab-data verify
+
+# 全量完成后导出不可覆盖的版本化Parquet快照
+stock-lab-data export --version CN_A_20180101_YYYYMMDD_v1
+```
+
+下载器会记录每只股票的完成、失败和重试状态；进程中断后重新执行同一命令即可继续。回测过程中不访问外部行情接口。
