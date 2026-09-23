@@ -98,6 +98,12 @@ class MarketWarehouseTest(unittest.TestCase):
             [],
         )
 
+    def test_adjustment_mode_cannot_be_mixed(self) -> None:
+        self.warehouse.ensure_daily_adjustment("qfq")
+        self.warehouse.ensure_daily_adjustment("qfq")
+        with self.assertRaises(ValueError):
+            self.warehouse.ensure_daily_adjustment("none")
+
 
 if __name__ == "__main__":
     unittest.main()

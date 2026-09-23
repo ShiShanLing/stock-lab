@@ -75,9 +75,19 @@ def _date_text(value: Any) -> str | None:
 
 
 class EastmoneyProvider:
-    def __init__(self, timeout: float = 25, retries: int = 6) -> None:
+    def __init__(
+        self,
+        timeout: float = 25,
+        retries: int = 6,
+        adjustment: str = "qfq",
+    ) -> None:
+        adjustments = {"none": 0, "qfq": 1, "hfq": 2}
+        if adjustment not in adjustments:
+            raise ValueError(f"不支持的复权方式：{adjustment}")
         self.timeout = timeout
         self.retries = retries
+        self.adjustment = adjustment
+        self.adjustment_code = adjustments[adjustment]
 
     def _request_json(
         self,
@@ -166,7 +176,7 @@ class EastmoneyProvider:
     ) -> list[DailyBar]:
         end = end_date or date.today().strftime("%Y%m%d")
         path = (
-            "/api/qt/stock/kline/get?klt=101&fqt=0"
+            f"/api/qt/stock/kline/get?klt=101&fqt={self.adjustment_code}"
             f"&secid={stock.secid}&beg={start_date}&end={end}"
             "&fields1=f1,f2,f3,f4,f5,f6,f7,f8"
             "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
@@ -192,6 +202,7 @@ class EastmoneyProvider:
                     change_pct=_number(parts[8]),
                     change_amount=_number(parts[9]),
                     turnover_pct=_number(parts[10]),
+                    source=f"eastmoney_{self.adjustment}",
                 )
             )
         return bars

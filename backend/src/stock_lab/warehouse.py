@@ -95,6 +95,23 @@ class MarketWarehouse:
                 [key, value, now],
             )
 
+    def ensure_daily_adjustment(self, adjustment: str) -> None:
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT value FROM warehouse_metadata WHERE key = 'daily_price_adjustment'"
+            ).fetchone()
+            bar_count = connection.execute("SELECT COUNT(*) FROM daily_bars").fetchone()[0]
+        if current and current[0] != adjustment:
+            raise ValueError(
+                f"数据库已有 {current[0]} 行情，不能混入 {adjustment} 行情"
+            )
+        if not current and bar_count:
+            raise ValueError(
+                "数据库已有未标记复权方式的日线，不能继续混写；请使用新的数据目录"
+            )
+        if not current:
+            self.set_metadata("daily_price_adjustment", adjustment)
+
     def upsert_stocks(self, stocks: Iterable[StockIdentity]) -> int:
         now = datetime.now(_CST).replace(tzinfo=None)
         rows = [

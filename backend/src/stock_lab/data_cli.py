@@ -34,6 +34,7 @@ async def sync_daily(
     workers: int,
     limit: int | None,
 ) -> dict[str, int]:
+    warehouse.ensure_daily_adjustment(provider.adjustment)
     stocks = warehouse.stocks_for_sync(start_date, end_date, retry_failed=True, limit=limit)
     total = len(stocks)
     if total == 0:
@@ -102,12 +103,20 @@ def build_parser() -> argparse.ArgumentParser:
     daily.add_argument("--end", type=_date_arg, default=date.today().strftime("%Y%m%d"))
     daily.add_argument("--workers", type=int, default=3, choices=range(1, 7))
     daily.add_argument("--limit", type=int, default=None, help="仅同步前N只，用于验证")
+    daily.add_argument(
+        "--adjustment", choices=("qfq", "hfq", "none"), default="qfq",
+        help="价格复权方式，回测默认使用前复权qfq",
+    )
 
     full = subparsers.add_parser("full", help="同步目录后断点同步历史日线")
     full.add_argument("--start", type=_date_arg, default="20180101")
     full.add_argument("--end", type=_date_arg, default=date.today().strftime("%Y%m%d"))
     full.add_argument("--workers", type=int, default=3, choices=range(1, 7))
     full.add_argument("--limit", type=int, default=None)
+    full.add_argument(
+        "--adjustment", choices=("qfq", "hfq", "none"), default="qfq",
+        help="价格复权方式，回测默认使用前复权qfq",
+    )
 
     subparsers.add_parser("status", help="显示数据覆盖和同步进度")
     subparsers.add_parser("verify", help="校验重复、价格和覆盖范围")
@@ -118,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def async_main(args: argparse.Namespace) -> None:
     warehouse = MarketWarehouse(args.data_dir)
-    provider = EastmoneyProvider()
+    provider = EastmoneyProvider(adjustment=getattr(args, "adjustment", "qfq"))
     if args.command == "catalog":
         await sync_catalog(warehouse, provider)
     elif args.command == "daily":

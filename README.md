@@ -54,7 +54,7 @@ cd frontend && npm run build
 stock-lab-data catalog
 
 # 从2018年开始断点同步日线（默认低并发）
-stock-lab-data daily --start 20180101 --workers 2
+stock-lab-data daily --start 20180101 --workers 2 --adjustment qfq
 
 # 查看进度与数据覆盖
 stock-lab-data status
