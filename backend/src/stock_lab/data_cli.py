@@ -34,9 +34,12 @@ async def sync_daily(
     end_date: str,
     workers: int,
     limit: int | None,
+    retry_failed: bool = True,
 ) -> dict[str, int]:
     warehouse.ensure_daily_adjustment(provider.adjustment)
-    stocks = warehouse.stocks_for_sync(start_date, end_date, retry_failed=True, limit=limit)
+    stocks = warehouse.stocks_for_sync(
+        start_date, end_date, retry_failed=retry_failed, limit=limit
+    )
     total = len(stocks)
     if total == 0:
         print("没有需要同步的日线数据。", flush=True)
@@ -120,6 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider", choices=("eastmoney", "baostock"), default="eastmoney",
         help="日线数据源；BaoStock为顺序补偿源",
     )
+    daily.add_argument(
+        "--skip-failed", action="store_true",
+        help="暂时跳过失败和中断项，只处理从未同步的股票",
+    )
 
     full = subparsers.add_parser("full", help="同步目录后断点同步历史日线")
     full.add_argument("--start", type=_date_arg, default="20180101")
@@ -134,6 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider", choices=("eastmoney", "baostock"), default="eastmoney",
         help="日线数据源；BaoStock为顺序补偿源",
     )
+    full.add_argument("--skip-failed", action="store_true")
 
     subparsers.add_parser("status", help="显示数据覆盖和同步进度")
     subparsers.add_parser("verify", help="校验重复、价格和覆盖范围")
@@ -155,12 +163,14 @@ async def async_main(args: argparse.Namespace) -> None:
         await sync_catalog(warehouse, provider)
     elif args.command == "daily":
         await sync_daily(
-            warehouse, provider, args.start, args.end, args.workers, args.limit
+            warehouse, provider, args.start, args.end, args.workers, args.limit,
+            retry_failed=not args.skip_failed,
         )
     elif args.command == "full":
         await sync_catalog(warehouse, EastmoneyProvider(adjustment=adjustment))
         await sync_daily(
-            warehouse, provider, args.start, args.end, args.workers, args.limit
+            warehouse, provider, args.start, args.end, args.workers, args.limit,
+            retry_failed=not args.skip_failed,
         )
     elif args.command == "status":
         print(json.dumps(warehouse.summary(), ensure_ascii=False, indent=2))
