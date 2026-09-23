@@ -7,6 +7,7 @@ from pathlib import Path
 
 from stock_lab.data_sources import DailyBar, StockIdentity
 from stock_lab.data_sources.eastmoney import _date_text
+from stock_lab.data_sources.baostock_provider import _baostock_code
 from stock_lab.warehouse import MarketWarehouse
 
 
@@ -84,6 +85,14 @@ class MarketWarehouseTest(unittest.TestCase):
         self.assertEqual(_date_text(20180102), "2018-01-02")
         self.assertIsNone(_date_text("-"))
         self.assertIsNone(_date_text("20181399"))
+
+    def test_baostock_market_code(self) -> None:
+        self.assertEqual(_baostock_code(self.stock), "sh.600000")
+        beijing = self.stock.__class__(
+            secid="0.830001", code="830001", name="北交样本", market=0,
+            list_date="2020-01-01",
+        )
+        self.assertEqual(_baostock_code(beijing), "bj.830001")
 
     def test_interrupted_sync_is_resumable(self) -> None:
         self.warehouse.upsert_stocks([self.stock])

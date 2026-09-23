@@ -56,6 +56,9 @@ stock-lab-data catalog
 # 从2018年开始断点同步日线（默认低并发）
 stock-lab-data daily --start 20180101 --workers 2 --adjustment qfq
 
+# 东方财富限流或失败时，用BaoStock顺序补齐未完成项
+stock-lab-data daily --start 20180101 --provider baostock --adjustment qfq
+
 # 查看进度与数据覆盖
 stock-lab-data status
 

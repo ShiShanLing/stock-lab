@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "个人条件选股、回测与模拟盘实验平台"
 requires-python = ">=3.11"
 dependencies = [
+  "baostock>=0.9.2,<1",
   "duckdb>=1.4,<2",
   "fastapi>=0.115,<1",
   "pyarrow>=20,<22",

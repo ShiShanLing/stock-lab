@@ -4,10 +4,11 @@ import argparse
 import asyncio
 import json
 from datetime import date
+from typing import Any
 
 import requests
 
-from .data_sources import EastmoneyProvider, StockIdentity
+from .data_sources import BaoStockProvider, EastmoneyProvider, StockIdentity
 from .warehouse import MarketWarehouse
 
 
@@ -28,7 +29,7 @@ async def sync_catalog(warehouse: MarketWarehouse, provider: EastmoneyProvider) 
 
 async def sync_daily(
     warehouse: MarketWarehouse,
-    provider: EastmoneyProvider,
+    provider: Any,
     start_date: str,
     end_date: str,
     workers: int,
@@ -41,6 +42,8 @@ async def sync_daily(
         print("没有需要同步的日线数据。", flush=True)
         return {"complete": 0, "failed": 0, "rows": 0}
 
+    if not getattr(provider, "supports_parallel", True):
+        workers = 1
     print(
         f"开始同步日线：{total} 只，区间 {start_date}—{end_date}，并发 {workers}",
         flush=True,
@@ -88,7 +91,13 @@ async def sync_daily(
                     )
                 await asyncio.sleep(0.45 + 0.15 * (finished % 3))
 
-    await asyncio.gather(*(worker() for _ in range(workers)))
+    if hasattr(provider, "open"):
+        await asyncio.to_thread(provider.open)
+    try:
+        await asyncio.gather(*(worker() for _ in range(workers)))
+    finally:
+        if hasattr(provider, "close"):
+            await asyncio.to_thread(provider.close)
     return counters
 
 
@@ -107,6 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--adjustment", choices=("qfq", "hfq", "none"), default="qfq",
         help="价格复权方式，回测默认使用前复权qfq",
     )
+    daily.add_argument(
+        "--provider", choices=("eastmoney", "baostock"), default="eastmoney",
+        help="日线数据源；BaoStock为顺序补偿源",
+    )
 
     full = subparsers.add_parser("full", help="同步目录后断点同步历史日线")
     full.add_argument("--start", type=_date_arg, default="20180101")
@@ -116,6 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
     full.add_argument(
         "--adjustment", choices=("qfq", "hfq", "none"), default="qfq",
         help="价格复权方式，回测默认使用前复权qfq",
+    )
+    full.add_argument(
+        "--provider", choices=("eastmoney", "baostock"), default="eastmoney",
+        help="日线数据源；BaoStock为顺序补偿源",
     )
 
     subparsers.add_parser("status", help="显示数据覆盖和同步进度")
@@ -127,7 +144,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 async def async_main(args: argparse.Namespace) -> None:
     warehouse = MarketWarehouse(args.data_dir)
-    provider = EastmoneyProvider(adjustment=getattr(args, "adjustment", "qfq"))
+    adjustment = getattr(args, "adjustment", "qfq")
+    provider_name = getattr(args, "provider", "eastmoney")
+    provider = (
+        BaoStockProvider(adjustment=adjustment)
+        if provider_name == "baostock"
+        else EastmoneyProvider(adjustment=adjustment)
+    )
     if args.command == "catalog":
         await sync_catalog(warehouse, provider)
     elif args.command == "daily":
@@ -135,7 +158,7 @@ async def async_main(args: argparse.Namespace) -> None:
             warehouse, provider, args.start, args.end, args.workers, args.limit
         )
     elif args.command == "full":
-        await sync_catalog(warehouse, provider)
+        await sync_catalog(warehouse, EastmoneyProvider(adjustment=adjustment))
         await sync_daily(
             warehouse, provider, args.start, args.end, args.workers, args.limit
         )
