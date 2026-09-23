@@ -3,12 +3,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from concurrent.futures import ProcessPoolExecutor
 from datetime import date
 from typing import Any
 
 import requests
 
 from .data_sources import BaoStockProvider, EastmoneyProvider, StockIdentity
+from .data_sources.baostock_provider import (
+    fetch_baostock_worker,
+    initialize_baostock_worker,
+)
 from .warehouse import MarketWarehouse
 
 
@@ -104,6 +109,87 @@ async def sync_daily(
     return counters
 
 
+async def sync_baostock_parallel(
+    warehouse: MarketWarehouse,
+    provider: BaoStockProvider,
+    start_date: str,
+    end_date: str,
+    workers: int,
+    limit: int | None,
+    retry_failed: bool = True,
+) -> dict[str, int]:
+    warehouse.ensure_daily_adjustment(provider.adjustment)
+    stocks = warehouse.stocks_for_sync(
+        start_date, end_date, retry_failed=retry_failed, limit=limit
+    )
+    total = len(stocks)
+    if total == 0:
+        print("没有需要同步的日线数据。", flush=True)
+        return {"complete": 0, "failed": 0, "rows": 0}
+    process_count = max(1, min(workers, 4))
+    print(
+        f"开始BaoStock补偿同步：{total} 只，区间 {start_date}—{end_date}，进程 {process_count}",
+        flush=True,
+    )
+    counters = {"complete": 0, "failed": 0, "rows": 0}
+    loop = asyncio.get_running_loop()
+    with ProcessPoolExecutor(
+        max_workers=process_count,
+        initializer=initialize_baostock_worker,
+        initargs=(provider.adjustment,),
+    ) as executor:
+        async def fetch_one(
+            stock: StockIdentity,
+        ) -> tuple[StockIdentity, list[Any] | None, Exception | None]:
+            try:
+                bars = await loop.run_in_executor(
+                    executor, fetch_baostock_worker, stock, start_date, end_date
+                )
+                return stock, bars, None
+            except Exception as exc:
+                return stock, None, exc
+
+        pending: list[asyncio.Task[tuple[StockIdentity, list[Any] | None, Exception | None]]] = []
+        for stock in stocks:
+            warehouse.mark_sync_started(stock.secid, start_date, end_date)
+            pending.append(asyncio.create_task(fetch_one(stock)))
+        for future in asyncio.as_completed(pending):
+            stock, bars, error = await future
+            if error is None and bars is not None:
+                counters["rows"] += warehouse.save_daily_bars(
+                    stock.secid, bars, start_date=start_date, end_date=end_date
+                )
+                counters["complete"] += 1
+            else:
+                warehouse.mark_sync_failed(stock.secid, str(error))
+                counters["failed"] += 1
+            finished = counters["complete"] + counters["failed"]
+            if finished == total or finished % 25 == 0:
+                print(
+                    f"补偿进度 {finished}/{total}：成功 {counters['complete']}，失败 {counters['failed']}，新增/更新 {counters['rows']} 行",
+                    flush=True,
+                )
+    return counters
+
+
+async def run_daily_sync(
+    warehouse: MarketWarehouse,
+    provider: Any,
+    start_date: str,
+    end_date: str,
+    workers: int,
+    limit: int | None,
+    retry_failed: bool,
+) -> dict[str, int]:
+    if isinstance(provider, BaoStockProvider):
+        return await sync_baostock_parallel(
+            warehouse, provider, start_date, end_date, workers, limit, retry_failed
+        )
+    return await sync_daily(
+        warehouse, provider, start_date, end_date, workers, limit, retry_failed
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stock Lab A股本地数据仓库")
     parser.add_argument("--data-dir", default=None, help="市场数据目录，默认 data/market")
@@ -162,13 +248,13 @@ async def async_main(args: argparse.Namespace) -> None:
     if args.command == "catalog":
         await sync_catalog(warehouse, provider)
     elif args.command == "daily":
-        await sync_daily(
+        await run_daily_sync(
             warehouse, provider, args.start, args.end, args.workers, args.limit,
             retry_failed=not args.skip_failed,
         )
     elif args.command == "full":
         await sync_catalog(warehouse, EastmoneyProvider(adjustment=adjustment))
-        await sync_daily(
+        await run_daily_sync(
             warehouse, provider, args.start, args.end, args.workers, args.limit,
             retry_failed=not args.skip_failed,
         )

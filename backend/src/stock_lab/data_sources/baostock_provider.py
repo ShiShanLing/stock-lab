@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from typing import Any
+import atexit
 
 import baostock as bs
-import requests
 
 from .eastmoney import DailyBar, StockIdentity
 
@@ -48,7 +48,7 @@ class BaoStockProvider:
 
     def fetch_daily_bars(
         self,
-        _session: requests.Session,
+        _session: Any,
         stock: StockIdentity,
         start_date: str = "20180101",
         end_date: str | None = None,
@@ -109,3 +109,25 @@ class BaoStockProvider:
         if result.error_code != "0":
             raise RuntimeError(f"BaoStock读取失败：{result.error_msg}")
         return bars
+
+
+_WORKER_PROVIDER: BaoStockProvider | None = None
+
+
+def initialize_baostock_worker(adjustment: str) -> None:
+    global _WORKER_PROVIDER
+    _WORKER_PROVIDER = BaoStockProvider(adjustment=adjustment)
+    _WORKER_PROVIDER.open()
+    atexit.register(_WORKER_PROVIDER.close)
+
+
+def fetch_baostock_worker(
+    stock: StockIdentity,
+    start_date: str,
+    end_date: str,
+) -> list[DailyBar]:
+    if _WORKER_PROVIDER is None:
+        raise RuntimeError("BaoStock子进程尚未初始化")
+    return _WORKER_PROVIDER.fetch_daily_bars(
+        None, stock, start_date, end_date
+    )
