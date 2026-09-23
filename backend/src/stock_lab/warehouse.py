@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import pyarrow as pa
 
 from .data_sources import DailyBar, StockIdentity
 
@@ -126,15 +127,17 @@ class MarketWarehouse:
         retry_failed: bool = True,
         limit: int | None = None,
     ) -> list[StockIdentity]:
-        status_filter = "('complete')" if not retry_failed else "('complete', 'running')"
+        retry_clause = "OR x.status <> 'complete'" if retry_failed else ""
         sql = f"""
             SELECT s.secid, s.code, s.name, s.market, CAST(s.list_date AS VARCHAR), s.source
             FROM stocks s
             LEFT JOIN sync_state x ON x.secid = s.secid AND x.dataset = 'daily_bars'
             WHERE x.secid IS NULL
-               OR x.status NOT IN {status_filter}
-               OR x.start_date > CAST(? AS DATE)
-               OR x.end_date < CAST(? AS DATE)
+               {retry_clause}
+               OR (x.status = 'complete' AND (
+                    x.start_date > CAST(? AS DATE)
+                    OR x.end_date < CAST(? AS DATE)
+               ))
             ORDER BY s.secid
         """
         if limit:
@@ -183,36 +186,37 @@ class MarketWarehouse:
     ) -> int:
         now = datetime.now(_CST).replace(tzinfo=None)
         rows = [
-            [
-                bar.secid,
-                bar.trade_date,
-                bar.open,
-                bar.close,
-                bar.high,
-                bar.low,
-                bar.volume,
-                bar.amount,
-                bar.amplitude_pct,
-                bar.change_pct,
-                bar.change_amount,
-                bar.turnover_pct,
-                bar.source,
-                now,
-            ]
+            {
+                "secid": bar.secid,
+                "trade_date": bar.trade_date,
+                "open": bar.open,
+                "close": bar.close,
+                "high": bar.high,
+                "low": bar.low,
+                "volume": bar.volume,
+                "amount": bar.amount,
+                "amplitude_pct": bar.amplitude_pct,
+                "change_pct": bar.change_pct,
+                "change_amount": bar.change_amount,
+                "turnover_pct": bar.turnover_pct,
+                "source": bar.source,
+                "loaded_at": now,
+            }
             for bar in bars
         ]
         with self.connect() as connection:
             if rows:
-                for offset in range(0, len(rows), 500):
-                    chunk = rows[offset : offset + 500]
-                    values_sql = ",".join(
-                        "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                        for _ in chunk
-                    )
-                    parameters = [value for row in chunk for value in row]
+                incoming = pa.Table.from_pylist(rows)
+                connection.register("incoming_daily_bars", incoming)
+                try:
                     connection.execute(
-                        f"""
-                        INSERT INTO daily_bars VALUES {values_sql}
+                        """
+                        INSERT INTO daily_bars
+                        SELECT
+                            secid, CAST(trade_date AS DATE), open, close, high, low,
+                            volume, amount, amplitude_pct, change_pct, change_amount,
+                            turnover_pct, source, loaded_at
+                        FROM incoming_daily_bars
                         ON CONFLICT (secid, trade_date) DO UPDATE SET
                             open = excluded.open,
                             close = excluded.close,
@@ -226,9 +230,10 @@ class MarketWarehouse:
                             turnover_pct = excluded.turnover_pct,
                             source = excluded.source,
                             loaded_at = excluded.loaded_at
-                        """,
-                        parameters,
+                        """
                     )
+                finally:
+                    connection.unregister("incoming_daily_bars")
             connection.execute(
                 """
                 UPDATE sync_state SET status = 'complete', row_count = ?, error = NULL, updated_at = ?

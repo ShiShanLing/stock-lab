@@ -85,7 +85,19 @@ class MarketWarehouseTest(unittest.TestCase):
         self.assertIsNone(_date_text("-"))
         self.assertIsNone(_date_text("20181399"))
 
+    def test_interrupted_sync_is_resumable(self) -> None:
+        self.warehouse.upsert_stocks([self.stock])
+        self.warehouse.mark_sync_started(self.stock.secid, "20180101", "20260923")
+
+        pending = self.warehouse.stocks_for_sync("20180101", "20260923")
+        self.assertEqual([stock.secid for stock in pending], ["1.600000"])
+        self.assertEqual(
+            self.warehouse.stocks_for_sync(
+                "20180101", "20260923", retry_failed=False
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-
