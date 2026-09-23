@@ -270,6 +270,31 @@ class MarketWarehouse:
                 [error[:1000], datetime.now(_CST).replace(tzinfo=None), secid],
             )
 
+    def mark_invalid_stocks_for_resync(self) -> int:
+        now = datetime.now(_CST).replace(tzinfo=None)
+        with self.connect() as connection:
+            invalid = connection.execute(
+                """
+                SELECT DISTINCT secid FROM daily_bars
+                WHERE close <= 0 OR open <= 0
+                   OR high < GREATEST(open, close, low)
+                   OR low > LEAST(open, close, high)
+                   OR volume < 0 OR amount < 0
+                """
+            ).fetchall()
+            secids = [row[0] for row in invalid]
+            if secids:
+                placeholders = ",".join("?" for _ in secids)
+                connection.execute(
+                    f"""
+                    UPDATE sync_state
+                    SET status = 'failed', error = 'OHLC校验异常，等待补偿源覆盖', updated_at = ?
+                    WHERE dataset = 'daily_bars' AND secid IN ({placeholders})
+                    """,
+                    [now, *secids],
+                )
+        return len(secids)
+
     def summary(self) -> dict[str, Any]:
         with self.connect() as connection:
             stock_count = connection.execute("SELECT COUNT(*) FROM stocks").fetchone()[0]
@@ -315,6 +340,15 @@ class MarketWarehouse:
                    OR low > LEAST(open, close, high) OR volume < 0 OR amount < 0
                 """
             ).fetchone()[0]
+            invalid_stocks = connection.execute(
+                """
+                SELECT COUNT(DISTINCT secid) FROM daily_bars
+                WHERE close <= 0 OR open <= 0
+                   OR high < GREATEST(open, close, low)
+                   OR low > LEAST(open, close, high)
+                   OR volume < 0 OR amount < 0
+                """
+            ).fetchone()[0]
             short_histories = connection.execute(
                 """
                 SELECT COUNT(*) FROM (
@@ -327,6 +361,7 @@ class MarketWarehouse:
             **summary,
             "duplicate_count": int(duplicate_count),
             "invalid_ohlc_count": int(invalid_ohlc),
+            "invalid_stock_count": int(invalid_stocks),
             "stocks_with_less_than_60_bars": int(short_histories),
             "passed": duplicate_count == 0 and invalid_ohlc == 0,
         }

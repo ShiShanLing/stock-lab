@@ -231,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("status", help="显示数据覆盖和同步进度")
     subparsers.add_parser("verify", help="校验重复、价格和覆盖范围")
+    subparsers.add_parser("repair-invalid", help="把OHLC异常股票标为待补偿，不删除原数据")
     export = subparsers.add_parser("export", help="导出只读Parquet快照")
     export.add_argument("--version", required=True)
     return parser
@@ -262,6 +263,9 @@ async def async_main(args: argparse.Namespace) -> None:
         print(json.dumps(warehouse.summary(), ensure_ascii=False, indent=2))
     elif args.command == "verify":
         print(json.dumps(warehouse.verify(), ensure_ascii=False, indent=2))
+    elif args.command == "repair-invalid":
+        count = warehouse.mark_invalid_stocks_for_resync()
+        print(f"已将 {count} 只OHLC异常股票标记为待补偿。")
     elif args.command == "export":
         path = warehouse.export_snapshot(args.version)
         print(f"快照已导出：{path}")

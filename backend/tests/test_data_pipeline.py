@@ -113,6 +113,30 @@ class MarketWarehouseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.warehouse.ensure_daily_adjustment("none")
 
+    def test_invalid_prices_can_be_marked_for_resync(self) -> None:
+        self.warehouse.upsert_stocks([self.stock])
+        self.warehouse.mark_sync_started(self.stock.secid, "20180101", "20260923")
+        invalid = DailyBar(
+            secid=self.stock.secid,
+            trade_date="2026-09-23",
+            open=-1,
+            close=-1,
+            high=-0.9,
+            low=-1.1,
+            volume=100,
+            amount=100,
+            amplitude_pct=1,
+            change_pct=1,
+            change_amount=0,
+            turnover_pct=1,
+        )
+        self.warehouse.save_daily_bars(
+            self.stock.secid, [invalid], "20180101", "20260923"
+        )
+        self.assertEqual(self.warehouse.mark_invalid_stocks_for_resync(), 1)
+        pending = self.warehouse.stocks_for_sync("20180101", "20260923")
+        self.assertEqual([stock.secid for stock in pending], [self.stock.secid])
+
 
 if __name__ == "__main__":
     unittest.main()
