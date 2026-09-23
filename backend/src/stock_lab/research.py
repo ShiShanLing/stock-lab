@@ -20,6 +20,8 @@ class StrategySpec:
     holding_days: int
     position_count: int
     scorer: Callable[[dict[str, Any]], float | None]
+    regime: str = "always"
+    stop_loss_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,8 @@ def _common(row: dict[str, Any]) -> bool:
         and _finite(row["ret_120"])
         and _finite(row["ma_120"])
         and _finite(row["vol_60"])
+        and _finite(row["holding_max_abs_return"])
+        and float(row["holding_max_abs_return"]) <= 0.50
     )
 
 
@@ -102,17 +106,48 @@ def _near_breakout(row: dict[str, Any]) -> float | None:
     return float(row["ret_120"]) + distance * 0.1
 
 
+def _momentum_12_1(row: dict[str, Any]) -> float | None:
+    if not _common(row) or not _finite(row["ret_240"]) or not _finite(row["ret_20"]):
+        return None
+    if row["ret_240"] <= 0 or row["close"] <= row["ma_120"]:
+        return None
+    return (1 + float(row["ret_240"])) / max(1 + float(row["ret_20"]), 0.01) - 1
+
+
+def _conservative_trend(row: dict[str, Any]) -> float | None:
+    if not _common(row) or not all(
+        _finite(row[key]) for key in ("ret_20", "ret_60", "ma_20", "ma_60")
+    ):
+        return None
+    if not (row["close"] > row["ma_20"] > row["ma_60"] > row["ma_120"]):
+        return None
+    if not (0 < row["ret_20"] < 0.20 and 0 < row["ret_60"] < 0.40):
+        return None
+    if not (0 < row["ret_120"] < 0.60 and row["vol_60"] < 0.50):
+        return None
+    return -float(row["vol_60"]) + 0.20 * float(row["ret_60"])
+
+
 def candidate_strategies() -> list[StrategySpec]:
     families = [
-        ("momentum120", "中期动量", _momentum_120),
-        ("dual_momentum", "双周期动量", _dual_momentum),
-        ("risk_trend", "风险调整趋势", _risk_adjusted_trend),
-        ("low_vol_trend", "低波动趋势", _low_volatility_trend),
-        ("trend_pullback", "趋势回撤", _trend_pullback),
-        ("near_breakout", "临近120日新高", _near_breakout),
+        ("momentum120", "中期动量", _momentum_120, "always"),
+        ("dual_momentum", "双周期动量", _dual_momentum, "always"),
+        ("risk_trend", "风险调整趋势", _risk_adjusted_trend, "always"),
+        ("low_vol_trend", "低波动趋势", _low_volatility_trend, "always"),
+        ("trend_pullback", "趋势回撤", _trend_pullback, "always"),
+        ("near_breakout", "临近120日新高", _near_breakout, "always"),
+        ("breadth45_momentum", "市场宽度45%·中期动量", _momentum_120, "breadth45"),
+        ("breadth55_dual", "市场宽度55%·双周期动量", _dual_momentum, "breadth55"),
+        ("breadth45_low_vol", "市场宽度45%·低波动趋势", _low_volatility_trend, "breadth45"),
+        ("breadth55_low_vol", "市场宽度55%·低波动趋势", _low_volatility_trend, "breadth55"),
+        ("breadth45_12_1", "市场宽度45%·12减1月动量", _momentum_12_1, "breadth45"),
+        ("breadth55_12_1", "市场宽度55%·12减1月动量", _momentum_12_1, "breadth55"),
+        ("breadth45_conservative", "市场宽度45%·保守趋势", _conservative_trend, "breadth45"),
+        ("breadth50_conservative", "市场宽度50%·保守趋势", _conservative_trend, "breadth50"),
+        ("breadth55_conservative", "市场宽度55%·保守趋势", _conservative_trend, "breadth55"),
     ]
     result: list[StrategySpec] = []
-    for family, name, scorer in families:
+    for family, name, scorer, regime in families:
         for holding_days in (10, 20):
             for position_count in (5, 10, 20):
                 result.append(
@@ -123,8 +158,24 @@ def candidate_strategies() -> list[StrategySpec]:
                         holding_days=holding_days,
                         position_count=position_count,
                         scorer=scorer,
+                        regime=regime,
                     )
                 )
+    for stop_loss in (0.08, 0.10):
+        for position_count in (5, 10):
+            percent = int(stop_loss * 100)
+            result.append(
+                StrategySpec(
+                    key=f"breadth45_conservative_stop{percent}_h10_n{position_count}",
+                    name=f"市场宽度45%·保守趋势·止损{percent}%·{position_count}只",
+                    family=f"breadth45_conservative_stop{percent}",
+                    holding_days=10,
+                    position_count=position_count,
+                    scorer=_conservative_trend,
+                    regime="breadth45",
+                    stop_loss_pct=stop_loss,
+                )
+            )
     return result
 
 
@@ -154,17 +205,20 @@ def _calendar_periods(
 def _load_rows(
     connection: duckdb.DuckDBPyConnection,
     periods: list[ResearchPeriod],
+    holding_days: int,
 ) -> dict[str, list[dict[str, Any]]]:
     if not periods:
         return {}
     table = pa.Table.from_pylist([asdict(period) for period in periods])
     connection.register("research_periods", table)
     try:
+        if holding_days not in {10, 20}:
+            raise ValueError("研究持有期仅允许10或20个交易日")
         cursor = connection.execute(
-            """
+            f"""
             WITH base AS (
                 SELECT
-                    b.secid, b.trade_date, b.close, b.amount,
+                    b.secid, b.trade_date, b.close, b.low, b.amount,
                     b.close / NULLIF(LAG(b.close, 5) OVER stock_window, 0) - 1 AS ret_5,
                     b.close / NULLIF(LAG(b.close, 20) OVER stock_window, 0) - 1 AS ret_20,
                     b.close / NULLIF(LAG(b.close, 60) OVER stock_window, 0) - 1 AS ret_60,
@@ -192,7 +246,15 @@ def _load_rows(
                 SELECT base.*,
                     STDDEV_SAMP(daily_return) OVER (
                         PARTITION BY secid ORDER BY trade_date ROWS BETWEEN 59 PRECEDING AND CURRENT ROW
-                    ) * SQRT(252) AS vol_60
+                    ) * SQRT(252) AS vol_60,
+                    MAX(ABS(daily_return)) OVER (
+                        PARTITION BY secid ORDER BY trade_date
+                        ROWS BETWEEN 1 FOLLOWING AND {holding_days + 1} FOLLOWING
+                    ) AS holding_max_abs_return,
+                    MIN(low) OVER (
+                        PARTITION BY secid ORDER BY trade_date
+                        ROWS BETWEEN 1 FOLLOWING AND {holding_days + 1} FOLLOWING
+                    ) AS holding_min_low
                 FROM base
             )
             SELECT
@@ -200,6 +262,8 @@ def _load_rows(
                 s.code, s.name, f.secid, f.close,
                 f.ret_5, f.ret_20, f.ret_60, f.ret_120, f.ret_240,
                 f.ma_20, f.ma_60, f.ma_120, f.high_120, f.vol_60, f.avg_amount_20,
+                f.holding_max_abs_return,
+                f.holding_min_low,
                 entry_bar.open AS entry_open, exit_bar.open AS exit_open
             FROM research_periods p
             JOIN features f ON f.trade_date = CAST(p.signal_date AS DATE)
@@ -248,18 +312,37 @@ def evaluate_strategy(
         rows = rows_by_date.get(period.signal_date, [])
         scored: list[tuple[float, dict[str, Any]]] = []
         benchmark_returns: list[float] = []
+        eligible_signal_rows = [row for row in rows if _common(row)]
+        breadth = (
+            mean(float(row["close"] > row["ma_120"]) for row in eligible_signal_rows)
+            if eligible_signal_rows
+            else 0.0
+        )
+        regime_open = (
+            spec.regime == "always"
+            or (spec.regime == "breadth45" and breadth >= 0.45)
+            or (spec.regime == "breadth50" and breadth >= 0.50)
+            or (spec.regime == "breadth55" and breadth >= 0.55)
+        )
         for row in rows:
             if _common(row):
                 benchmark_returns.append(float(row["exit_open"]) / float(row["entry_open"]) - 1)
-            score = spec.scorer(row)
+            score = spec.scorer(row) if regime_open else None
             if score is not None and math.isfinite(score):
                 scored.append((score, row))
         scored.sort(key=lambda item: item[0], reverse=True)
         selected = scored[: spec.position_count]
-        returns = [
-            float(row["exit_open"]) / float(row["entry_open"]) - 1 - round_trip_cost
-            for _, row in selected
-        ]
+        returns: list[float] = []
+        for _, row in selected:
+            raw_return = float(row["exit_open"]) / float(row["entry_open"]) - 1
+            if (
+                spec.stop_loss_pct is not None
+                and _finite(row["holding_min_low"])
+                and float(row["holding_min_low"])
+                <= float(row["entry_open"]) * (1 - spec.stop_loss_pct)
+            ):
+                raw_return = -spec.stop_loss_pct
+            returns.append(raw_return - round_trip_cost)
         period_return = mean(returns) if returns else 0.0
         benchmark_return = mean(benchmark_returns) if benchmark_returns else 0.0
         if returns:
@@ -277,6 +360,7 @@ def evaluate_strategy(
                 "exit_date": period.exit_date,
                 "return_pct": round(period_return * 100, 4),
                 "holdings": [row["code"] for _, row in selected],
+                "market_breadth_pct": round(breadth * 100, 2),
             }
         )
     elapsed_days = max(
@@ -285,7 +369,11 @@ def evaluate_strategy(
     )
     annual_return = (math.pow(max(equity, 0.000001), 365 / elapsed_days) - 1) * 100
     benchmark_annual = (math.pow(max(benchmark, 0.000001), 365 / elapsed_days) - 1) * 100
-    wins = sum(value > 0 for value in period_returns)
+    active_returns = [
+        detail["return_pct"] / 100 for detail in details if detail["holdings"]
+    ]
+    wins = sum(value > 0 for value in active_returns)
+    calendar_wins = sum(value > 0 for value in period_returns)
     trade_wins = sum(value > 0 for value in trade_returns)
     return {
         "strategy_key": spec.key,
@@ -293,13 +381,20 @@ def evaluate_strategy(
         "family": spec.family,
         "holding_days": spec.holding_days,
         "position_count": spec.position_count,
+        "stop_loss_pct": spec.stop_loss_pct,
         "periods": len(period_returns),
         "invested_periods": invested_periods,
+        "participation_rate_pct": round(
+            invested_periods / max(len(period_returns), 1) * 100, 2
+        ),
         "average_holdings": round(holdings_total / max(invested_periods, 1), 2),
         "total_return_pct": round((equity - 1) * 100, 2),
         "annual_return_pct": round(annual_return, 2),
         "max_drawdown_pct": round(_max_drawdown(curve), 2),
-        "period_win_rate_pct": round(wins / max(len(period_returns), 1) * 100, 2),
+        "period_win_rate_pct": round(wins / max(invested_periods, 1) * 100, 2),
+        "calendar_win_rate_pct": round(
+            calendar_wins / max(len(period_returns), 1) * 100, 2
+        ),
         "trade_win_rate_pct": round(trade_wins / max(len(trade_returns), 1) * 100, 2),
         "benchmark_total_return_pct": round((benchmark - 1) * 100, 2),
         "benchmark_annual_return_pct": round(benchmark_annual, 2),
@@ -309,8 +404,16 @@ def evaluate_strategy(
 
 
 def _score(metrics: dict[str, Any]) -> float:
+    target_bonus = (
+        50.0
+        if metrics["period_win_rate_pct"] >= 60
+        and metrics["invested_periods"] >= 12
+        and metrics["participation_rate_pct"] >= 35
+        else 0.0
+    )
     return (
-        metrics["annual_excess_pct"]
+        target_bonus
+        + metrics["annual_excess_pct"]
         + 0.25 * metrics["annual_return_pct"]
         + 0.20 * metrics["period_win_rate_pct"]
         + 0.35 * metrics["max_drawdown_pct"]
@@ -341,7 +444,7 @@ def run_research(
                 ("validation", validation),
             ):
                 periods = _calendar_periods(connection, *date_range, holding_days)
-                rows = _load_rows(connection, periods)
+                rows = _load_rows(connection, periods, holding_days)
                 for spec in matching:
                     results[split_name][spec.key] = evaluate_strategy(spec, periods, rows)
 
@@ -362,7 +465,7 @@ def run_research(
                 break
         for holding_days in sorted({spec.holding_days for spec in finalists}):
             periods = _calendar_periods(connection, *blind_test, holding_days)
-            rows = _load_rows(connection, periods)
+            rows = _load_rows(connection, periods, holding_days)
             for spec in finalists:
                 if spec.holding_days == holding_days:
                     results["blind_test"][spec.key] = evaluate_strategy(spec, periods, rows)
@@ -375,6 +478,9 @@ def run_research(
             validation_metrics["period_win_rate_pct"] >= 60
             and test_metrics["period_win_rate_pct"] >= 60
             and test_metrics["periods"] >= 24
+            and validation_metrics["invested_periods"] >= 12
+            and test_metrics["invested_periods"] >= 24
+            and test_metrics["participation_rate_pct"] >= 35
             and test_metrics["annual_excess_pct"] > 0
             and test_metrics["max_drawdown_pct"] > -30
         ):
@@ -390,8 +496,8 @@ def run_research(
             "round_trip_cost": 0.0016,
             "candidate_count": len(specs),
             "finalist_count": len(finalists),
-            "target": "验证集和最终盲测的周期胜率均不低于60%，盲测至少24期、年化超额为正、最大回撤优于-30%",
-            "warning": "历史回测不能保证未来盈利；当前股票目录仍可能存在幸存者偏差。",
+            "target": "验证集和确认集的实际开仓周期胜率均不低于60%，确认集至少24个开仓周期且参与率不低于35%、年化超额为正、最大回撤优于-30%",
+            "warning": "历史回测不能保证未来盈利；第二代策略是在第一代结果可见后设计，确认集不再属于完全未见盲测；当前股票目录仍可能存在幸存者偏差。",
         },
         "finalists": [spec.key for spec in finalists],
         "reliable_candidates": reliable,

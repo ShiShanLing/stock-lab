@@ -61,7 +61,7 @@ class StrategyResearchTest(unittest.TestCase):
             path = run_research(warehouse.database_path, root / "research")
             report = json.loads(path.read_text(encoding="utf-8"))
 
-            self.assertEqual(report["methodology"]["candidate_count"], 36)
+            self.assertEqual(report["methodology"]["candidate_count"], 94)
             self.assertEqual(len(report["finalists"]), 3)
             self.assertEqual(
                 set(report["finalists"]), set(report["results"]["blind_test"])
