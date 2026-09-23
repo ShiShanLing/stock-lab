@@ -67,3 +67,15 @@ stock-lab-data export --version CN_A_20180101_YYYYMMDD_v1
 ```
 
 下载器会记录每只股票的完成、失败和重试状态；进程中断后重新执行同一命令即可继续。回测过程中不访问外部行情接口。
+
+## 多策略样本外研究
+
+全量日线完成并校验后运行：
+
+```bash
+stock-lab-research \
+  --database data/market/market.duckdb \
+  --output data/research
+```
+
+研究程序会固定评估36个策略组合，先用开发集和验证集排名，每个策略家族最多选一个候选，最后只对锁定的3个候选运行一次最终盲测。完整方法和通过标准见 `docs/STRATEGY_RESEARCH_PLAN.md`，报告保存在不提交Git的 `data/research/strategy_research.json`。

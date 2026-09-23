@@ -22,6 +22,7 @@ dev = ["httpx>=0.28,<1"]
 [project.scripts]
 stock-lab-api = "stock_lab.api:run"
 stock-lab-data = "stock_lab.data_cli:main"
+stock-lab-research = "stock_lab.research_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
