@@ -1,0 +1,23 @@
+[Unit]
+Description=Stock Lab API
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/stock-lab
+Environment=STOCK_LAB_DATA_DIR=/var/lib/stock-lab
+Environment=MARKET_DATA_PROVIDER=demo
+ExecStart=/opt/stock-lab/.venv/bin/uvicorn stock_lab.api:app --host 127.0.0.1 --port 8010
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/stock-lab
+
+[Install]
+WantedBy=multi-user.target
+

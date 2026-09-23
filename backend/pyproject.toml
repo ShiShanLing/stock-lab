@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stock-lab"
+version = "0.1.0"
+description = "个人条件选股、回测与模拟盘实验平台"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "pydantic>=2.10,<3",
+  "uvicorn>=0.34,<1",
+]
+
+[project.optional-dependencies]
+dev = ["httpx>=0.28,<1"]
+
+[project.scripts]
+stock-lab-api = "stock_lab.api:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
