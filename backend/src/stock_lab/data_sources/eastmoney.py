@@ -77,8 +77,8 @@ def _date_text(value: Any) -> str | None:
 class EastmoneyProvider:
     def __init__(
         self,
-        timeout: float = 25,
-        retries: int = 6,
+        timeout: float = 15,
+        retries: int = 3,
         adjustment: str = "qfq",
     ) -> None:
         adjustments = {"none": 0, "qfq": 1, "hfq": 2}
